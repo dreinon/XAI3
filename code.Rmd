@@ -1,0 +1,164 @@
+---
+title: "Exercise 5 - Partial Dependence Plots (XAI)"
+author: |
+  Daniel Reinón García  
+  Carlos Pérez Faus  
+  Miguel Abarca Casares
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## 1. One-Dimensional Partial Dependence Plot (PDP)
+
+We apply a random forest model to predict the number of bike rentals (`cnt`) using variables like temperature, humidity, wind speed, and days since 2011 (`instant`).
+
+```{r one-dim-pdp}
+library(randomForest)
+library(tidyverse)
+library(iml)
+library(grid)
+library(gridExtra)
+
+# Load data
+day <- read.csv("day.csv")
+
+# Fit random forest model
+model_day <- randomForest(cnt ~ ., data = day[, c("cnt", "instant", "temp", "hum", "windspeed")], ntree = 100)
+
+# Wrap in Predictor for iml
+predictor <- Predictor$new(model_day, data = day[, c("instant", "temp", "hum", "windspeed")], y = day$cnt)
+
+# PDP for days since 2011
+pdp <- FeatureEffect$new(predictor, feature="instant", method = "pdp")
+p1 <- pdp$plot() +
+  scale_x_continuous('Days since 2011', limits = c(0, NA)) +
+  scale_y_continuous("", limits = c(0, 5500))
+
+# PDP for temperature
+pdp$set.feature("temp")
+p2 <- pdp$plot() +
+  scale_x_continuous('Temperature', limits = c(0, NA)) +
+  scale_y_continuous('', limits = c(0, 5500))
+
+# PDP for humidity
+pdp$set.feature("hum")
+p3 <- pdp$plot() +
+  scale_x_continuous('Humidity', limits = c(0, NA)) +
+  scale_y_continuous('', limits = c(0, 5500))
+
+# PDP for windspeed
+pdp$set.feature("windspeed")
+p4 <- pdp$plot() +
+  scale_x_continuous('Wind speed', limits = c(0, NA)) +
+  scale_y_continuous('', limits = c(0, 5500))
+
+# Combine plots
+plot_grid_1d <- arrangeGrob(p1 + ylab("Predicted number of bikes"),
+                            p2 + ylab(NULL),
+                            p3 + ylab(NULL),
+                            p4 + ylab(NULL),
+                            ncol = 2)
+
+grid.arrange(plot_grid_1d, left = textGrob("Predicted number of bikes", rot = 90, gp = gpar(fontsize = 12)))
+```
+
+### Interpretation
+
+- **Days since 2011 (`instant`)** shows a clear upward trend. This likely reflects an overall growth in the use of the bike-sharing service over time, potentially due to increasing popularity, improvements in infrastructure, or seasonal accumulation effects.
+- **Temperature (`temp`)** has a strong positive influence. As temperature rises, predicted bike rentals increase sharply, peaking around moderate-to-high temperatures. This implies ideal biking conditions at pleasant temperatures, with a slight drop-off in extremely hot conditions.
+- **Humidity (`hum`)** negatively impacts the predicted number of bike rentals, especially beyond 60–70% humidity. This suggests that people are less likely to bike in uncomfortable, humid conditions.
+- **Windspeed** exhibits a consistent negative effect. As wind speed increases, predicted bike rentals decrease, likely due to the greater physical effort required or safety concerns in high-wind conditions.
+
+
+---
+
+## 2. Two-Dimensional PDP: Temperature vs Humidity
+
+We explore the joint effect of temperature and humidity using a 2D PDP and `geom_tile`.
+
+```{r two-dim-pdp}
+
+# Subsample
+set.seed(123)
+day_sample <- day[sample(nrow(day), 500), ]
+
+# Model
+model_sample <- randomForest(cnt ~ temp + hum, data = day_sample, ntree = 100)
+
+# Predictor
+predictor_2d <- Predictor$new(model_sample, data = day_sample[, c("temp", "hum")], y = day_sample$cnt)
+
+# 2D PDP
+pd <- FeatureEffect$new(predictor_2d, feature = c("temp", "hum"), method = "pdp")
+
+# Plot
+pd_data <- pd$plot()$data
+
+ggplot(pd_data, aes(x = temp, y = hum, fill = .value)) +
+  geom_tile() +
+  geom_rug(data = day_sample, aes(x = temp), sides = "b", inherit.aes = FALSE, alpha = 0.3) +
+  geom_rug(data = day_sample, aes(y = hum), sides = "l", inherit.aes = FALSE, alpha = 0.3) +
+  scale_fill_viridis_c() +
+  labs(title = "2D PDP: Temperature vs Humidity",
+       x = "Temperature",
+       y = "Humidity",
+       fill = "Predicted Rentals")
+```
+
+### Interpretation
+
+- The model predicts the most rentals when **temperature is moderate to warm (≈ 0.55–0.75)** and **humidity is moderate (≈ 0.35–0.60)**.
+- **Low temperatures (< 0.30)** suppress demand even if humidity is favourable.
+- **High humidity (> 0.80)** strongly reduces predicted rentals at any temperature.
+- The rug plots show that most observed days cluster within the moderate ranges; predictions in the darker corners are based on fewer observations and are therefore less certain.
+
+
+
+---
+
+## 3. PDP to Explain House Price
+We apply a random forest model to predict house prices using features like the number of bedrooms, bathrooms, square footage, and year built.
+
+```{r house-pdp-iml-1d}
+# (packages loaded earlier remain in session)
+
+# Load & subsample data
+kc <- read.csv("kc_house_data.csv")
+kc_sample <- kc[sample(nrow(kc), 1000), ]
+
+# Fit RF
+rf_kc <- randomForest(price ~ bedrooms + bathrooms + sqft_living + sqft_lot + floors + yr_built,
+                      data = kc_sample, ntree = 100)
+
+# Predictor wrapper
+pred_kc <- Predictor$new(
+  rf_kc,
+  data = kc_sample[, c("bedrooms", "bathrooms", "sqft_living", "sqft_lot", "floors", "yr_built")],
+  y    = kc_sample$price
+)
+
+# Features for 1‑D PDP
+one_d_feats <- c("bedrooms", "bathrooms", "sqft_living", "floors")
+plots_1d <- lapply(one_d_feats, function(f) {
+  FeatureEffect$new(pred_kc, feature = f, method = "pdp")$plot() +
+    scale_x_continuous(tools::toTitleCase(f), limits = c(0, NA)) +
+    scale_y_continuous("", limits = c(450000, 600000))
+})
+
+grid <- arrangeGrob(plots_1d[[1]], plots_1d[[2]], plots_1d[[3]], plots_1d[[4]], ncol = 2)
+grid.arrange(grid, left = textGrob("Predicted Price", rot = 90, gp = gpar(fontsize = 12)))
+```
+
+### Interpretation
+- **Bedrooms**: The PDP shows a *mildly increasing but wavy* pattern between 1 – 7 bedrooms. Prices hover between **\$560 k–\$590 k**; adding a bedroom occasionally bumps price, but the effect is inconsistent and levels off after ~4 bedrooms, indicating diminishing returns.
+
+- **Bathrooms**: A *clear positive slope* up to ≈ 3 bathrooms. Moving from 1 to 3 baths lifts predicted price from roughly **\$540 k to \$585 k**; beyond this, additional bathrooms add little value.
+
+- **Living area (`sqft_living`)**: The steepest curve—predicted price climbs from ≈ \$450 k at ~1 000 sq ft to > \$550 k at ~2 500 sq ft. Larger homes are valued higher, with near‑linear gains in this range.
+
+- **Floors**: A modest step‑wise increase; 2‑story homes fetch ≈ \$20 k more than single‑story, and 3 floors add another ≈ \$20 k. The overall influence is weaker than living area or bathrooms.
+
+Overall, **size‑related features (sqft_living, bathrooms)** drive price the most, whereas *bedrooms* and *floors* provide smaller, more saturated gains.
